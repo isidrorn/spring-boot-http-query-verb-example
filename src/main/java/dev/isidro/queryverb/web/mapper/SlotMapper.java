@@ -10,6 +10,7 @@ public class SlotMapper {
     public SlotResponse toResponse(Slot slot) {
         return new SlotResponse(
                 slot.getId(),
+                slot.getCalendar().getOwner().getId(),
                 slot.getStartTime(),
                 slot.getEndTime(),
                 slot.getStatus(),

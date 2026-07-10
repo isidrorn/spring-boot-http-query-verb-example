@@ -5,6 +5,7 @@ import java.time.Instant;
 
 public record SlotResponse(
         Long id,
+        Long userId,
         Instant startTime,
         Instant endTime,
         SlotStatus status,
