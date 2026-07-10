@@ -20,7 +20,8 @@ public class MeetingHandler {
     public ServerResponse schedule(ServerRequest request) throws Exception {
         Long userId = Long.valueOf(request.pathVariable("userId"));
         Long slotId = Long.valueOf(request.pathVariable("slotId"));
-        var meeting = meetingService.schedule(userId, slotId, requestValidator.parseAndValidate(request, MeetingCreateRequest.class));
+        var body = requestValidator.parseAndValidate(request, MeetingCreateRequest.class);
+        var meeting = meetingService.schedule(userId, slotId, body);
         return ServerResponse.status(201).contentType(MediaType.APPLICATION_JSON)
                 .body(meetingMapper.toResponse(meeting));
     }
