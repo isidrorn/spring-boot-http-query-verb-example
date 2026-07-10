@@ -45,8 +45,4 @@ public class Calendar {
         slot.assignCalendar(this);
     }
 
-    public void removeSlot(Slot slot) {
-        slots.remove(slot);
-        slot.assignCalendar(null);
-    }
 }
