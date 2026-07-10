@@ -95,6 +95,14 @@
             <version>4.1.0</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Spring Boot 4 modularization: TestRestTemplateTestAutoConfiguration needs RestTemplateBuilder,
+             which spring-boot-resttestclient does not pull in transitively. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-restclient</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
