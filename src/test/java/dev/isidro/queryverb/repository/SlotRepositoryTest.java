@@ -33,7 +33,7 @@ class SlotRepositoryTest {
         Calendar calendar = new Calendar(user);
         calendar.addSlot(new Slot(now, now.plus(1, ChronoUnit.HOURS)));                                   // FREE
         calendar.addSlot(new Slot(now.plus(2, ChronoUnit.HOURS), now.plus(3, ChronoUnit.HOURS)));         // FREE
-        em.persistAndFlush(calendar);
+        em.persistAndFlush(user);
         // manually mark second slot BUSY
         var busySlot = calendar.getSlots().get(1);
         busySlot.markBusy();
