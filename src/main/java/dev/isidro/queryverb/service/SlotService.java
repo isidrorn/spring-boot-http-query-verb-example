@@ -33,16 +33,15 @@ public class SlotService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "startTime must be before endTime");
         }
 
+        Calendar calendar = calendarRepository.findByOwnerIdForUpdate(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Calendar not found for userId=" + userId));
+
         boolean overlap = slotRepository.existsOverlap(userId, request.startTime(), request.endTime(), null);
         if (overlap) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Slot overlaps with an existing slot");
         }
 
-        Calendar calendar = calendarRepository.findByOwnerId(userId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Calendar not found for userId=" + userId));
-
-        Slot slot = new Slot(request.startTime(), request.endTime());
-        calendar.addSlot(slot);
+        Slot slot = new Slot(calendar, request.startTime(), request.endTime());
         return slotRepository.save(slot);
     }
 
@@ -60,6 +59,11 @@ public class SlotService {
         if (newStart.isAfter(newEnd) || newStart.equals(newEnd)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "startTime must be before endTime");
         }
+
+        // Serializes the overlap-check-then-write sequence per user — see
+        // CalendarRepository.findByOwnerIdForUpdate.
+        calendarRepository.findByOwnerIdForUpdate(userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Calendar not found for userId=" + userId));
 
         boolean overlap = slotRepository.existsOverlap(userId, newStart, newEnd, slotId);
         if (overlap) {

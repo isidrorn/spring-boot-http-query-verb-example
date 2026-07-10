@@ -51,6 +51,9 @@ class SlotServiceTest {
 
     @Test
     void create_throwsConflict_whenOverlapExists() {
+        User user = new User("Test", "test@test.com");
+        Calendar calendar = new Calendar(user);
+        when(calendarRepository.findByOwnerIdForUpdate(USER_ID)).thenReturn(Optional.of(calendar));
         when(slotRepository.existsOverlap(USER_ID, T0, T1, null)).thenReturn(true);
         assertThatThrownBy(() -> slotService.create(USER_ID, new SlotCreateRequest(T0, T1)))
                 .isInstanceOf(ResponseStatusException.class)
@@ -60,10 +63,10 @@ class SlotServiceTest {
 
     @Test
     void create_savesSlot_whenValid() {
-        when(slotRepository.existsOverlap(USER_ID, T0, T1, null)).thenReturn(false);
         User user = new User("Test", "test@test.com");
         Calendar calendar = new Calendar(user);
-        when(calendarRepository.findByOwnerId(USER_ID)).thenReturn(Optional.of(calendar));
+        when(calendarRepository.findByOwnerIdForUpdate(USER_ID)).thenReturn(Optional.of(calendar));
+        when(slotRepository.existsOverlap(USER_ID, T0, T1, null)).thenReturn(false);
         when(slotRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         Slot result = slotService.create(USER_ID, new SlotCreateRequest(T0, T1));
@@ -89,7 +92,10 @@ class SlotServiceTest {
     @Test
     void update_marksSlotBusy_whenRequested() {
         Slot slot = new Slot(T0, T1);
+        User user = new User("Test", "test@test.com");
+        Calendar calendar = new Calendar(user);
         when(slotRepository.findByUserIdAndSlotId(USER_ID, SLOT_ID)).thenReturn(Optional.of(slot));
+        when(calendarRepository.findByOwnerIdForUpdate(USER_ID)).thenReturn(Optional.of(calendar));
         when(slotRepository.existsOverlap(eq(USER_ID), any(), any(), eq(SLOT_ID))).thenReturn(false);
         when(slotRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 

@@ -54,6 +54,18 @@ public class Slot {
         this.status = SlotStatus.FREE;
     }
 
+    /**
+     * Assigns the calendar directly instead of going through Calendar.addSlot(),
+     * so callers don't need to load the calendar's full slots collection just to
+     * append one row — see SlotService.create().
+     */
+    public Slot(Calendar calendar, Instant startTime, Instant endTime) {
+        this.calendar = calendar;
+        this.startTime = startTime;
+        this.endTime = endTime;
+        this.status = SlotStatus.FREE;
+    }
+
     public void markBusy() {
         this.status = SlotStatus.BUSY;
     }
