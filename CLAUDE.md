@@ -254,3 +254,9 @@ as already fixed, and don't merge their content, they document two separate pass
   creation). Read it before touching `MeetingService.vote()`/`confirm()` — it documents an actual
   contradiction in the brief this design came from (whether a participant without free slots should
   block confirmation with a 409, or be silently skipped) and which behavior was implemented and why.
+  It also has an **open question flagged for later, not yet resolved** (🔭 near the end, in the
+  "Why QUERY itself has no live `/api-docs` entry" section): whether a different implementation
+  approach for the QUERY route could avoid the springdoc-openapi documentation gap entirely, rather
+  than documenting around it by hand (see [`query-endpoint.openapi.yaml`](query-endpoint.openapi.yaml)).
+  Check that section before spending more time on `/api-docs`/Swagger for the QUERY route — it has
+  the investigation done so far and the specific angles still worth checking.

@@ -163,6 +163,11 @@ slots each, in the same time window — check the logs for their generated `user
   meeting propose → vote → confirm/cancel flow.
 - [`demo.sh`](demo.sh) — a runnable, self-contained walkthrough of the same flow end-to-end against
   a live instance (`./demo.sh`, requires `curl` + `jq`); prints every request and response as it goes.
+- Swagger UI at `/swagger-ui.html` documents every route **except** `QUERY` itself — springdoc-openapi
+  can't represent a non-standard HTTP method yet (same closed-enum problem as `@RequestMapping`, just
+  hitting the doc generator instead of the router). [`query-endpoint.openapi.yaml`](query-endpoint.openapi.yaml)
+  is a hand-written OpenAPI-style document for that one route; see
+  [`design-decisions-v2.md`](design-decisions-v2.md) for the full investigation.
 
 ```bash
 # List all slots

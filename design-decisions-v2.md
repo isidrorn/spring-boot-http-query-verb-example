@@ -223,6 +223,71 @@ per-DTO schema detail would mean adding explicit `@Operation(requestBody=..., re
 content to each of the 12 `@RouterOperation` entries — real, bounded, but meaningfully more work,
 not attempted here.
 
+### Why QUERY itself has no live `/api-docs` entry, and how it's documented instead
+
+QUERY is the one route that can't be reached by *any* of the mechanisms above — not automatic
+discovery, not `@RouterOperation`. Both ultimately hand the route's HTTP method to
+`org.springframework.web.bind.annotation.RequestMethod`, a closed 8-value enum with no `QUERY`
+constant, so there is no annotation or configuration path within this project's current
+dependencies that documents it as a real, renderable Swagger UI operation.
+
+Confirmed this is a genuine dead end rather than something misconfigured, by inspecting the actual
+class file this project depends on rather than trusting changelogs: `io.swagger.v3.oas.models
+.PathItem` in `swagger-models-jakarta-2.2.47.jar` (the version springdoc-openapi 3.0.3 pulls in
+here) has no `query` field and no `additionalOperations` map — there's no field to put this
+information in even if springdoc's introspection could reach it.
+
+**This is a documentation-tooling version gap, not a consequence of this project choosing
+`RouterFunction`/WebMvc.fn over classic `@RequestMapping`.** A quick check (not a deep one — this is
+exactly the "note it down, don't solve it now" item below) found that springdoc's `@RequestMapping`
+-based automatic discovery goes through the same `RequestMethod`-typed machinery
+(`RequestMappingInfo`'s methods condition), so a classic `@RestController` implementation of this
+API would very likely hit the identical wall trying to document a non-standard verb — the officially
+suggested workaround for custom HTTP methods with `@RequestMapping` is also "use an
+`OpenApiCustomizer`," per the same springdoc ecosystem. The constraint traces back to
+`RequestMethod` itself (and, further back, the OpenAPI spec's `Path Item Object` before version
+3.2), not to this project's specific routing implementation.
+
+**The actual fix is upstream and not yet available**: OpenAPI 3.2 (released 2026) promotes `QUERY`
+to a first-class, named method in the `Path Item Object`, and separately adds a general
+`additionalOperations` keyword for any other non-standard method — Swagger's own tooling (Swagger
+UI, Editor, ApiDOM) has already announced 3.2 support. springdoc-openapi 3.0.3 and swagger-core
+2.2.47 (both pinned in this project) still target OpenAPI 3.1 and predate this. Once springdoc (or
+whatever OpenAPI generator this project uses at the time) adds 3.2 support, QUERY should document
+natively, with no workaround needed — regardless of routing implementation.
+
+**Documented by hand in the meantime**: [`query-endpoint.openapi.yaml`](query-endpoint.openapi.yaml)
+— a standalone, hand-authored OpenAPI-style document for just this one route (full request/response
+schemas, examples matching `api-examples.md`/`demo.sh`), using the `x-`/informal `query:` field
+convention to show what this should collapse into once tooling catches up. It is **not** wired into
+the live `/api-docs` JSON: springdoc has no supported hook to render a `PathItem` extension as a real
+interactive Swagger UI operation card, so a purpose-built file a human can actually read is more
+useful right now than an inert JSON blob nobody would notice in the generated spec.
+
+> #### 🔭 Open question — revisit later, not resolved now
+>
+> **Would a different implementation approach for the QUERY route (or for how this project talks to
+> springdoc) avoid this gap entirely, rather than just documenting around it?** Flagged explicitly so
+> it doesn't get lost — deliberately *not* investigated deeply in this pass, per instruction. Angles
+> worth checking next time this comes up:
+> - Has springdoc-openapi (or swagger-core) shipped OpenAPI 3.2 / `additionalOperations` support yet?
+>   Check current versions before reaching for anything more elaborate — this may simply resolve
+>   itself with a dependency bump.
+> - Would routing QUERY through a fully custom `HandlerMapping`/`HandlerAdapter` pair (bypassing both
+>   `@RequestMapping` and WebMvc.fn's `RouterFunction`) give springdoc *anything* more to work with,
+>   or does its introspection ultimately bottom out at `RequestMethod` regardless of the dispatch
+>   mechanism above it? Unconfirmed either way.
+> - Is there a supported way to make an `OpenApiCustomizer`-injected operation actually *render* as a
+>   normal operation card in Swagger UI (not just sit inertly as a `PathItem` extension) — e.g. by
+>   constructing the `Operation` under a real (if semantically wrong) method key like `post` with a
+>   loud disclaimer in the description? Weigh the "at least it's visible and interactive" upside
+>   against actively mislabeling the one thing this whole project exists to get right.
+> - Reassess whether documenting-around-it (this file) remains the right call once any of the above
+>   changes, or whether it's worth revisiting the "servlet filter rewriting QUERY → POST" alternative
+>   the README already discusses and rejected for routing — springdoc would document that cleanly,
+>   at the cost of the same problem the README already flags: hiding the real method from logs,
+>   metrics, and tracing, undermining what this project demonstrates.
+
 **Bonus fix found along the way**: `GlobalExceptionHandler.handleGeneric()` (the `@RestControllerAdvice`
 fallback for any future `@RestController`, and — as this investigation surfaced — the actual handler
 for exceptions from springdoc's own `@RestController` endpoints) was swallowing every unhandled

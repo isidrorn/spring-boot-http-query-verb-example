@@ -1,0 +1,131 @@
+# Hand-authored OpenAPI documentation for QUERY /api/users/{userId}/slots.
+#
+# Why this file exists instead of this being generated automatically like every other route:
+# springdoc-openapi (the library that generates this project's live /api-docs) can only emit
+# operations for the 8 classic HTTP methods (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS/TRACE) — the
+# Java model class it builds documents from, io.swagger.v3.oas.models.PathItem (from
+# swagger-models-jakarta, version pinned in this project's dependency tree: 2.2.47), has no field
+# to represent QUERY, and no `additionalOperations` map for arbitrary methods either — confirmed by
+# inspecting that exact jar's PathItem.class directly, not just reading changelogs.
+#
+# The OpenAPI *specification* itself only gained a place to put this in version 3.2 (released 2026):
+# QUERY became a named, first-class method, and a general `additionalOperations` keyword was added
+# for any other non-standard method. springdoc-openapi 3.0.3 (pinned here) still targets OpenAPI
+# 3.1, which predates both. See the "Why QUERY has no live /api-docs entry" section in
+# design-decisions-v2.md for the full investigation, including why this turned out to be a
+# documentation-tooling version gap rather than a consequence of this project's routing design
+# (WebMvc.fn RouterFunction vs. classic @RequestMapping) — and an open question, not yet resolved,
+# on whether an alternative implementation approach could route around it.
+#
+# This file is written in valid YAML, structured to mirror an OpenAPI Path Item as closely as
+# the spec allows today: since there's no standard field for QUERY in OpenAPI 3.1, it uses the
+# specification-extension convention (the `x-` prefix) that OpenAPI has always reserved for exactly
+# this situation. It is NOT wired into the live /api-docs JSON output — springdoc has no supported
+# hook to make it render as a real interactive Swagger UI operation card (an `x-` extension on a
+# PathItem shows as inert raw JSON in Swagger UI's model panel at best), so a standalone,
+# purpose-built file that a human can actually read is more useful than a JSON blob nobody notices.
+# Update this by hand if SlotQueryFilter or SlotResponse change shape.
+
+openapi: 3.1.0    # aspirational — describes the target 3.2 shape (see `query:` below) for when tooling catches up
+info:
+  title: Mini Doodle — Scheduling API — QUERY endpoint supplement
+  version: 0.1.0
+  description: >
+    Standalone documentation for the one route springdoc-openapi cannot generate automatically.
+    See README.md and api-examples.md for the full working curl examples this mirrors.
+
+paths:
+  /api/users/{userId}/slots:
+    # `query` is not a valid OpenAPI 3.1 Path Item field — no tooling in this project's dependency
+    # tree understands it yet. It's written this way (rather than under `x-http-method-query`) to
+    # show the OpenAPI 3.2-native shape this should collapse into once springdoc/swagger-core catch
+    # up: at that point this whole block becomes copy-pasteable into the real spec with no changes.
+    query:
+      operationId: querySlots
+      summary: Filter a user's slots by status and/or time range (HTTP QUERY)
+      description: >
+        Safe, idempotent read with a structured filter in the request body — the reason this whole
+        project exists. Semantically equivalent to GET with query parameters, but without URI
+        length limits and with a typed, self-documenting payload. All filter fields are optional;
+        an empty or entirely absent body means "no filter" (see SlotHandler.parseFilter and the
+        querySlots_withNoBody_treatedAsNoFilter_returnsAllSlots test — some HTTP clients, including
+        this project's own integration test client, don't send a body at all for a non-standard
+        method, and that must not be rejected).
+      tags: [slot-handler]
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlotQueryFilter'
+            examples:
+              filterByStatus:
+                summary: Filter by status only
+                value: { "status": "FREE" }
+              filterByTimeRange:
+                summary: Filter by time range only
+                value: { "from": "2027-01-01T08:00:00Z", "to": "2027-01-01T11:00:00Z" }
+              combined:
+                summary: Combine status and time range
+                value: { "status": "FREE", "from": "2027-01-01T08:00:00Z", "to": "2027-01-01T12:00:00Z" }
+              noFilter:
+                summary: Empty body — equivalent to no filter at all
+                value: {}
+      responses:
+        "200":
+          description: Matching slots for this user, ordered by startTime ascending.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SlotResponse'
+
+components:
+  schemas:
+    SlotQueryFilter:
+      type: object
+      description: All fields optional — absent means "no filter on this dimension".
+      properties:
+        status:
+          $ref: '#/components/schemas/SlotStatus'
+        from:
+          type: string
+          format: date-time
+          description: Inclusive lower bound — matches slots whose endTime is on or after this instant.
+        to:
+          type: string
+          format: date-time
+          description: Inclusive upper bound — matches slots whose startTime is on or before this instant.
+
+    SlotResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/SlotStatus'
+        meetingIds:
+          type: array
+          description: Every meeting (PROPOSED or CONFIRMED) that includes this slot.
+          items:
+            type: integer
+            format: int64
+
+    SlotStatus:
+      type: string
+      enum: [FREE, BUSY]
