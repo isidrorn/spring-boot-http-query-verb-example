@@ -1,18 +1,25 @@
 package dev.isidro.queryverb.web.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
+import java.time.Instant;
 import java.util.List;
 
 /**
- * Converts an organizer's slot into a meeting.
- *
- * <p>participantSlotIds: the slot IDs that each participant is willing to use
- * for this meeting. Each slot must be FREE and must overlap with the organizer's
- * slot. Verified and locked atomically in MeetingService.
+ * Creates a meeting in PROPOSED status with no slots booked yet — booking only happens once
+ * every REQUIRED participant votes YES, see MeetingService.vote/confirm.
  */
 public record MeetingCreateRequest(
         @NotBlank String title,
         String description,
-        @NotEmpty List<Long> participantSlotIds
-) {}
+        @NotNull Long organizerUserId,
+        @NotNull Instant startTime,
+        @NotNull Instant endTime,
+        List<Long> requiredParticipantUserIds,
+        List<Long> optionalParticipantUserIds
+) {
+    public MeetingCreateRequest {
+        requiredParticipantUserIds = requiredParticipantUserIds == null ? List.of() : requiredParticipantUserIds;
+        optionalParticipantUserIds = optionalParticipantUserIds == null ? List.of() : optionalParticipantUserIds;
+    }
+}
