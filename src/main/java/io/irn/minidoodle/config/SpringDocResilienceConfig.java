@@ -29,7 +29,7 @@ import org.springframework.web.servlet.function.ServerRequest;
  * .getRequestMethod()} converts each route's {@code HttpMethod} to Spring MVC's {@code
  * RequestMethod} enum via an exhaustive switch — and {@code RequestMethod} has no {@code QUERY}
  * constant (it's the same closed-enum problem {@code @RequestMapping} has, documented in this
- * project's README, just biting springdoc's route introspection instead of our own routing).
+ * project's query-method.md, just biting springdoc's route introspection instead of our own routing).
  * That throws an unguarded {@code IllegalStateException}, and springdoc's default {@code
  * RouterFunctionWebMvcProvider} has no per-bean isolation around it: one route with an unknown
  * HTTP method aborts {@code /api-docs} generation for the entire application, not just that

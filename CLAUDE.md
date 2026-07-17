@@ -240,6 +240,16 @@ few times in a row, since a broken lock would only show up as occasional extra `
   `@ExtendWith(MockitoExtension.class)` for unit tests.
 - `DataSeeder` is excluded under the `test` profile (`@Profile("!test")`).
 
+## Docs layout: README.md vs. query-method.md
+
+`README.md` is written for a technical reviewer evaluating this as a take-home submission — it stays
+focused on the scheduling app itself (domain, API, run/consume/test instructions) and only points at
+`QUERY` in passing. [`query-method.md`](query-method.md) is the front door for everything specific to
+the HTTP `QUERY` method: why it's used, how it's routed, the `Content-Length` gotcha, and a pointer
+into the `/api-docs`/Swagger UI saga below. When adding anything QUERY-specific, put the durable
+explanation in `query-method.md` (or the decision logs it points to), not in `README.md` — keep
+README's QUERY footprint to the short pointer it already has.
+
 ## Prior spec-compliance review and design decision logs
 
 Three files are **historical records**, not current TODO lists — don't re-fix anything they describe

@@ -1,20 +1,30 @@
 # minidoodle
 
-Two things in one repo:
+A "mini Doodle" meeting-scheduling backend: users define available time slots on a personal
+calendar, propose meetings against other users, and a meeting confirms once every required
+participant votes yes — booking each participant's free slots automatically. Built with Spring Boot
+4.1 and Java 21.
 
-1. A playground for the new HTTP `QUERY` method
-   ([draft-ietf-httpbis-safe-method-w-body](https://www.ietf.org/archive/id/draft-ietf-httpbis-safe-method-w-body-09.html))
-   in a Spring Boot 4.1 / Java 21 service.
-2. A small "mini Doodle" meeting-scheduling API that gives `QUERY` something real to filter:
-   users book `FREE` slots on their calendar, propose meetings against other users, and meetings
-   confirm once every required participant votes yes.
+This repo also happens to demonstrate the HTTP `QUERY` method on one route (filtering slots by a
+structured body instead of query-string parameters) — that's a self-contained side quest with its
+own story worth reading, but it's not the point of the exercise, so it's kept out of this file. See
+[`query-method.md`](query-method.md) if you're curious how `QUERY` is routed, and what it took to get
+it documented in Swagger UI.
 
-## Why QUERY?
+## What it does
 
-`GET` cannot carry a body (by convention, and many proxies strip it). `POST` carries a body but is
-neither safe nor idempotent. `QUERY` fills that gap: a **safe, idempotent, cacheable** read
-operation that needs a structured filter in the request body — exactly the case of "search my
-calendar slots between these dates, with this status".
+- **Time slot management** — create slots with a system-wide, configurable duration
+  (`scheduling.slot-duration-minutes`), modify or delete them, mark them busy/free.
+- **Meeting scheduling** — propose a meeting with a title, description, and participants (each with
+  a role — organizer / required / optional); once every required participant votes yes, the meeting
+  confirms and books each participant's free slots for the window automatically.
+- **Calendar** is a domain concept only — it's never exposed as its own REST resource; slots are
+  addressed through `/api/users/{userId}/slots`.
+- **Querying availability** — filter a user's slots by status and/or time range via `QUERY` (or list
+  them all via plain `GET`).
+- Designed with "hundreds of users, thousands of slots" in mind: an index on `(calendar_id,
+  start_time)`, row-level locking sized to avoid serializing unrelated writes (see below), and a
+  concurrency test that actually proves it rather than just asserting it in a docstring.
 
 ## Domain
 
@@ -26,8 +36,6 @@ User  1 ──── 1  Calendar  1 ──── N  Slot  N ──── M  Meet
                                               N ──── 1  User
 ```
 
-- `Calendar` is domain-only — it's never exposed as a REST resource; slots are addressed through
-  `/api/users/{userId}/slots`.
 - `User` cascades `ALL` to its `Calendar`, which cascades `ALL` to its `Slot`s. Always persist
   through `userRepository.save(user)` when the user is new — saving from the `Calendar` or `Slot`
   side does not cascade upward and throws `TransientPropertyValueException`.
@@ -59,66 +67,14 @@ User  1 ──── 1  Calendar  1 ──── N  Slot  N ──── M  Meet
   See [`spec-review.md`](spec-review.md#2-toctou-race-between-the-overlap-check-and-the-insertupdate)
   for how this was originally found and verified.
 
-## How QUERY is wired
-
-Spring's `HttpMethod` is an open value object (`HttpMethod.valueOf("QUERY")`), so routing on it
-doesn't require a custom annotation or touching `RequestMappingHandlerMapping`. This project uses
-**Functional Route Definitions** (`WebMvc.fn`) instead of `@RestController`:
-
-```java
-route()
-    .GET(SLOTS,  accept(APPLICATION_JSON), slots::listAll)
-    .route(method(QUERY).and(path(SLOTS)).and(accept(APPLICATION_JSON)), slots::query)
-    .POST(SLOTS, contentType(APPLICATION_JSON), slots::create)
-    .build()
-    .filter(routerExceptionFilter::filter);
-```
-
-See [`SlotRouterConfig`](src/main/java/io/irn/minidoodle/web/SlotRouterConfig.java) and
-[`SlotHandler`](src/main/java/io/irn/minidoodle/web/SlotHandler.java).
-
-Other ways this could have been done (and why they were discarded here):
-- **Servlet filter rewriting `QUERY` → `POST`**: works on any Spring version but is a workaround,
-  hides the real method from logs/metrics/tracing.
-- **Custom `RequestCondition` + custom annotation**: closer to `@RestController` ergonomics, but
-  needs extra infrastructure (a custom `HandlerMapping`) for a single extra verb.
-- **Functional routes (chosen)**: standard Spring API, no custom infra, and it reads cleanly next
-  to `GET`/`POST` on the same resource.
-
-`@RestControllerAdvice` does not intercept exceptions thrown from a `HandlerFunction` (it only
-targets `HandlerMethod`/`@Controller`), so error handling is done by a `HandlerFilterFunction`
-chained onto the `RouterFunction` instead — see
-[`RouterExceptionFilter`](src/main/java/io/irn/minidoodle/web/RouterExceptionFilter.java).
-
-Embedded Tomcat accepts `QUERY` on the wire; this is verified end-to-end with `TestRestTemplate`
-(a real socket, not MockMvc) — see [`SlotRouteIT`](src/test/java/io/irn/minidoodle/web/SlotRouteIT.java).
-
-Note: some HTTP clients (including `TestRestTemplate` in this project's own tests) don't set a
-`Content-Length` header for a body sent with a non-standard method like `QUERY`. Don't gate body
-parsing on `Content-Length` being present — just attempt to parse the body and treat a genuinely
-empty/absent one as "no filter" via the parse failure itself.
-
-## Validation
-
-Functional routes have no equivalent of `@Valid` on a `@RequestBody` parameter — `ServerRequest
-.body(Class)` never invokes a `Validator`, so the `@NotBlank`/`@NotNull`/`@Email`/`@NotEmpty`
-annotations on the request DTOs (`UserCreateRequest`, `SlotBulkCreateRequest`,
-`MeetingCreateRequest`, `VoteRequest`, `MeetingCancelRequest`) would otherwise never be checked, even
-with `spring-boot-starter-validation` on the classpath. Instead,
-[`RequestValidator`](src/main/java/io/irn/minidoodle/web/RequestValidator.java) parses the body
-and runs it through the autoconfigured `jakarta.validation.Validator` explicitly, throwing a
-`ResponseStatusException(BAD_REQUEST, ...)` on the first set of violations — which
-`RouterExceptionFilter` turns into a ProblemDetail like any other. Every handler that parses a
-validated DTO calls `requestValidator.parseAndValidate(request, X.class)` instead of
-`request.body(X.class)` directly. (`SlotUpdateRequest` is the one exception — every field is
-optional, so there's no bean-validation constraint to run; the handler calls `request.body(...)`
-directly and the grid-alignment/overlap checks happen as ordinary business-rule validation in
-`SlotService`.)
-
 ## API routes
 
 All routes are declared in
-[`SlotRouterConfig`](src/main/java/io/irn/minidoodle/web/SlotRouterConfig.java):
+[`SlotRouterConfig`](src/main/java/io/irn/minidoodle/web/SlotRouterConfig.java) as functional
+routes (`WebMvc.fn`) rather than `@RestController` methods — the one route using `QUERY`
+(`HttpMethod.valueOf("QUERY")`) can't be expressed through `@RequestMapping`, which is closed to a
+fixed enum of methods, so the whole API is declared consistently the same way. See
+[`query-method.md`](query-method.md) for the full reasoning.
 
 ```
 GET    /api/users                                  → list users
@@ -138,6 +94,11 @@ DELETE /api/meetings/{meetingId}                              → cancel meeting
 POST   /api/meetings/{meetingId}/participants/{userId}/vote  → cast a vote
 ```
 
+Every path variable and request body is validated before it reaches business logic — a bad-typed id
+or a malformed/mistyped body returns 400 with a specific message, not a 500. See
+[`design-decisions-v3.md`](design-decisions-v3.md) and the "Input validation" section of
+[`api-examples.md`](api-examples.md).
+
 ## Run
 
 No Maven wrapper is checked into this repo — use a local Maven install (or your IDE's bundled one)
@@ -149,7 +110,7 @@ such as 26 — getters/builders/`@Slf4j` silently fail to generate, which shows 
 # Without Docker (H2 in-memory)
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 
-# With Docker (PostgreSQL)
+# With Docker (PostgreSQL) — includes the app and its database, no extra setup
 docker-compose up
 ```
 
@@ -159,20 +120,14 @@ slots each, in the same time window — check the logs for their generated `user
 ## Consume
 
 - [`api-examples.md`](api-examples.md) — a full set of copy-pasteable `curl` examples covering
-  users, slots (bulk create, all `QUERY` filter variants, the overlap-conflict case), and the full
-  meeting propose → vote → confirm/cancel flow.
+  users, slots (bulk create, all `QUERY` filter variants, the overlap-conflict case), input
+  validation, and the full meeting propose → vote → confirm/cancel flow.
 - [`demo.sh`](demo.sh) — a runnable, self-contained walkthrough of the same flow end-to-end against
   a live instance (`./demo.sh`, requires `curl` + `jq`); prints every request and response as it goes.
-- Swagger UI at `/swagger-ui.html` documents all 13 routes, including `QUERY` — springdoc-openapi
-  itself can't represent a non-standard HTTP method (same closed-enum problem as `@RequestMapping`,
-  just hitting the doc generator instead of the router), so `/api-docs` is post-processed at the
-  HTTP layer to promote it into a real, OpenAPI-3.2-shaped `query` operation the bundled Swagger UI
-  build already knows how to render. [`query-endpoint.openapi.yaml`](query-endpoint.openapi.yaml) is
-  still the fuller hand-written reference (more examples, parameter notes); see
-  [`design-decisions-v2.md`](design-decisions-v2.md) for the full investigation, including how this
-  was found not to be fully solvable at all initially, and what changed. For a quick-reference list
-  of every error hit along the way and how each was fixed, see
-  [`troubleshooting.md`](troubleshooting.md).
+- Swagger UI at `/swagger-ui.html` documents all 13 routes, including `QUERY` — see
+  [`query-method.md`](query-method.md) for how a non-standard HTTP method ended up documented there.
+- Metrics: Prometheus-formatted metrics (including request latency percentiles) at
+  `/actuator/prometheus`; health at `/actuator/health`.
 
 ```bash
 # List all slots
@@ -190,7 +145,7 @@ curl -X POST http://localhost:8080/api/users/1/slots \
 ```
 
 `SlotQueryFilter` fields (`status`, `from`, `to`) are all optional — an empty/absent body is a valid
-QUERY meaning "no filter".
+QUERY meaning "no filter."
 
 ## Tests
 
@@ -209,7 +164,7 @@ mvn test -Dtest=*Test,*IT
 | Repository (`@DataJpaTest`) | `SlotRepositoryTest`, `CalendarRepositoryTest` |
 | Integration (`@SpringBootTest`, `RANDOM_PORT`, H2) | `UserRouteIT`, `SlotRouteIT`, `MeetingRouteIT` |
 
-84 tests total. Integration tests share seeding/cleanup helpers from
+104 tests total. Integration tests share seeding/cleanup helpers from
 [`TestSupport`](src/test/java/io/irn/minidoodle/TestSupport.java) rather than a common base
 class — each IT class carries its own `@SpringBootTest`/`@AutoConfigureTestRestTemplate` setup.
 
@@ -224,24 +179,42 @@ smoke-tested against a real `docker-compose` Postgres instance, not just H2 — 
 [`design-decisions-v2.md`](design-decisions-v2.md) for why that matters for this codebase
 specifically (H2 and Postgres disagree on how they type-check certain bind parameters).
 
-## Relationship to the Doodle coding challenge
+## Known limitations / trade-offs
 
-This repo doubles as the submission for a "mini Doodle" scheduling backend take-home challenge: the
-`User`/`Calendar`/`Slot`/`Meeting`/`MeetingParticipant` domain, the repository query patterns, and
-the functional-route style aren't a separate exercise bolted on — this repository *is* the challenge
-submission, built around the `QUERY` verb demo rather than alongside it. (The original prompt isn't
-included in this repo, since take-home exercises are typically not meant to be republished — but the
-requirements it covers are summarized in [`spec-review.md`](spec-review.md).)
+Flagged deliberately rather than left for a reviewer to discover — the brief invites shipping an
+incomplete solution as long as the reasoning is explained:
 
-Three documents record how this implementation evolved and why:
-- [`spec-review.md`](spec-review.md) — the original spec-compliance pass: dead bean validation, a
-  TOCTOU race in slot creation, meetings not exposing participants, an O(n) collection load on every
-  slot create, and the tests added to prove each fix.
-- [`design-decisions-v2.md`](design-decisions-v2.md) — the v2 refactor to a propose/vote/confirm
-  meeting model with system-wide slot duration and bulk slot creation, including a brief internal
-  contradiction that had to be resolved (what happens when a participant lacks free slots at
-  confirmation time) and the reasoning behind the choice.
-- [`design-decisions-v3.md`](design-decisions-v3.md) — the rebrand to `minidoodle` (package, app
-  name, artifact) and an input-validation hardening pass: every path variable and request body is
-  now validated before it can reach an uncaught exception, closing a real bug (a bad-typed path
-  parameter — e.g. Swagger UI's own default placeholder — 500ing instead of 400ing).
+- **No pagination** on `GET /api/users` or `GET /api/users/{userId}/slots` — a real gap given the
+  "thousands of slots" scale note; a user with a large calendar gets every slot in one response.
+  Deferred rather than fixed because it needs a decision on cursor-vs-offset pagination and a
+  response-envelope change that touches every list endpoint. See
+  [`spec-review.md`](spec-review.md#discussed-deliberately-not-changed).
+- **Schema managed by Hibernate's `ddl-auto: update`**, not a migration tool (Flyway/Liquibase) —
+  fine for a take-home, not how a production service should manage schema changes.
+- **No authentication/authorization** — every endpoint trusts the `userId` supplied in the path or
+  body as-is (e.g. cancelling a meeting only checks that the *supplied* `userId` matches the
+  organizer, not that the caller has proven they are that user). Out of scope for this brief, but a
+  real gap if this were exposed beyond a trusted network.
+- **No cross-participant "find a time that works for everyone" suggestion** — the closest real Doodle
+  gets to its own core feature. This implementation requires a proposer to already pick a
+  `startTime`/`endTime`; participants can `QUERY` their own free slots first, but there's no endpoint
+  that intersects several users' availability automatically.
+
+## Design decisions & how this was validated
+
+Three documents record how this implementation evolved and why, each covering a separate pass —
+they intentionally aren't merged into one:
+
+- [`spec-review.md`](spec-review.md) — the original spec-compliance pass against the take-home
+  brief: dead bean validation, a TOCTOU race in slot creation, meetings not exposing participants,
+  an O(n) collection load on every slot create, and the tests added to prove each fix.
+- [`design-decisions-v2.md`](design-decisions-v2.md) — the refactor to the current
+  propose/vote/confirm meeting model with system-wide slot duration and bulk slot creation,
+  including a contradiction in the brief that had to be resolved (what happens when a participant
+  lacks free slots at confirmation time) and the reasoning behind the choice made.
+- [`design-decisions-v3.md`](design-decisions-v3.md) — the rebrand to `minidoodle` and an
+  input-validation hardening pass closing a real bug (a bad-typed path parameter 500ing instead of
+  400ing).
+
+(The original take-home prompt isn't included in this repo, since take-home exercises are typically
+not meant to be republished — its requirements are summarized in `spec-review.md`.)
