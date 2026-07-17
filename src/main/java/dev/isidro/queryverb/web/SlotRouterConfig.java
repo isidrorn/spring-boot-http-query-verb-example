@@ -36,6 +36,14 @@ import org.springframework.web.servlet.function.ServerResponse;
  * DELETE /api/meetings/{meetingId}                          → cancel meeting (organizer only)
  * POST   /api/meetings/{meetingId}/participants/{userId}/vote → cast a vote
  * </pre>
+ *
+ * <p>The QUERY route is deliberately its own {@code @Bean}, separate from {@link #routes}: Spring
+ * Boot's {@code RouterFunctionMapping} auto-configuration combines every {@code RouterFunction}
+ * bean in the context for actual request dispatch, so this has no effect on routing — but
+ * springdoc-openapi's route introspection can't convert the {@code QUERY} method (see
+ * {@link dev.isidro.queryverb.config.SpringDocResilienceConfig}) and aborts documenting whichever
+ * bean it's walking the moment it hits that route. Keeping it isolated means only this one bean —
+ * not every other route in the app — goes undocumented.
  */
 @Configuration
 public class SlotRouterConfig {
@@ -60,7 +68,6 @@ public class SlotRouterConfig {
                 .POST(USERS, contentType(MediaType.APPLICATION_JSON), users::create)
                 // Slots
                 .GET(SLOTS,  accept(MediaType.APPLICATION_JSON), slots::listAll)
-                .route(method(QUERY).and(path(SLOTS)).and(accept(MediaType.APPLICATION_JSON)), slots::query)
                 .POST(SLOTS, contentType(MediaType.APPLICATION_JSON), slots::create)
                 .GET(SLOT,   accept(MediaType.APPLICATION_JSON), slots::getOne)
                 .PATCH(SLOT, contentType(MediaType.APPLICATION_JSON), slots::update)
@@ -71,6 +78,12 @@ public class SlotRouterConfig {
                 .DELETE(MEETING_BY_ID, contentType(MediaType.APPLICATION_JSON), meetings::cancel)
                 .POST(MEETING_VOTE, contentType(MediaType.APPLICATION_JSON), meetings::vote)
                 .build()
+                .filter(exceptionFilter::filter);
+    }
+
+    @Bean
+    public RouterFunction<ServerResponse> queryRoute(SlotHandler slots, RouterExceptionFilter exceptionFilter) {
+        return route(method(QUERY).and(path(SLOTS)).and(accept(MediaType.APPLICATION_JSON)), slots::query)
                 .filter(exceptionFilter::filter);
     }
 }

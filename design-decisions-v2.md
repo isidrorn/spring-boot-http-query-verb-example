@@ -137,6 +137,83 @@ parameter-type-inference divergence documented in CLAUDE.md doesn't apply here. 
 against `docker-compose`'s Postgres anyway (bulk create, QUERY filtering, and the full
 create → vote → confirm → cancel flow), not just inferred from the query shape.
 
+## `/api-docs` 500'd on QUERY — a pre-existing springdoc-openapi bug, not caused by this refactor
+
+Found while doing a live end-to-end verification pass after this refactor (`docker-compose up` +
+`demo.sh` against the real container, not just `mvn test`): `GET /api-docs` returned 500, and so did
+`/swagger-ui.html` once its page tried to fetch the spec client-side. Confirmed this predates the v2
+refactor entirely by checking out the pre-refactor commit in a throwaway `git worktree` and hitting
+the same endpoint there — same 500, same stack trace.
+
+**Root cause**, traced from the actual stack trace (springdoc's `GlobalExceptionHandler` was
+silently swallowing it without logging — fixed as part of this, see below):
+`org.springdoc.core.fn.RouterFunctionData.getRequestMethod()` converts each route's `HttpMethod` to
+Spring MVC's `RequestMethod` enum via an exhaustive `switch` with no default-safe branch —
+`RequestMethod` only has the 8 classic verbs (GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS/TRACE), with
+no `QUERY` constant. It's the exact same closed-enum-vs-open-value-object mismatch this whole
+project exists to demonstrate about `@RequestMapping`, just biting springdoc's introspection instead
+of Spring's own routing. `springdoc.paths-to-exclude` does **not** help — verified directly, not
+assumed — because it filters the already-built document, after this exception has already
+propagated out of route discovery and aborted the whole request.
+
+Springdoc's default `RouterFunctionWebMvcProvider.getRouterFunctionPaths()` also has no per-bean
+isolation: it iterates every `RouterFunction` bean in the context in one loop with no try/catch, so
+one bad route in any bean kills `/api-docs` for the entire application, not just that route.
+
+**Fix**, in two parts:
+
+1. [`SpringDocResilienceConfig`](src/main/java/dev/isidro/queryverb/config/SpringDocResilienceConfig.java)
+   replaces springdoc's default `RouterFunctionProvider` bean with one that wraps each `RouterFunction`
+   bean's traversal in a try/catch, logging and skipping any bean that fails instead of propagating.
+   Getting Spring to actually use this bean over springdoc's own took two more findings, both from
+   testing rather than assuming:
+   - Naming the bean method `routerFunctionProvider` (matching springdoc's) throws
+     `BeanDefinitionOverrideException` at startup — a bean-definition name collision is resolved
+     before `@ConditionalOnMissingBean` ever runs.
+   - `@ConditionalOnMissingBean` on springdoc's bean method matches by that method's *return type*
+     (`RouterFunctionWebMvcProvider`, the concrete class) — not the `RouterFunctionProvider`
+     interface. Since this replacement can't be typed as `RouterFunctionWebMvcProvider` (its
+     `applicationContext` field and visitor inner class are both `private`, so there's no
+     subclassing hook), that condition never matches it, and springdoc's own bean gets registered
+     too. With two `RouterFunctionProvider` beans and no `@Primary`, Spring resolved the ambiguity by
+     matching the constructor parameter name in springdoc's `SpringDocProviders` — literally
+     `routerFunctionProvider` — silently preferring springdoc's bean over this one regardless of what
+     this one was named. `@Primary` is what actually wins that tie.
+
+2. [`SlotRouterConfig`](src/main/java/dev/isidro/queryverb/web/SlotRouterConfig.java) splits the
+   QUERY route into its own `@Bean`, separate from every other route. This isn't cosmetic: since all
+   routes originally lived in *one* `RouterFunction` bean, the try/catch in (1) — before this split —
+   caught the exception but had to discard the *entire* bean's routes, not just QUERY, since the
+   visitor aborts mid-traversal with no way to resume from where it left off. Splitting means only
+   the isolated `queryRoute` bean is skipped; `routes` documents normally. Spring Boot's
+   `RouterFunctionMapping` auto-configuration combines every `RouterFunction` bean in the context for
+   actual request dispatch regardless of how many separate `@Bean` methods declare them, so this has
+   no effect on routing — confirmed by rerunning the full test suite (84/84 green, including the
+   `QUERY`-specific `SlotRouteIT` cases and the bulk-create concurrency test) after the split, not
+   just assumed from how the mapping is documented to work.
+
+**What this fix actually achieves, found while verifying it**: springdoc's automatic documentation
+of `RouterFunction` routes isn't fully automatic. Tracing `AbstractOpenApiResource
+.getRouterFunctionPaths()` shows it only populates real `Operation` entries for a route already
+carrying a `.withAttribute(OPERATION_ATTRIBUTE, ...)` marker, or one matched against manual
+`@RouterOperation`/`@RouterOperations` annotations on the bean — neither of which this project has.
+Without them, `mergeRouters()` runs against an empty operation list and produces nothing. This is
+independent of the QUERY bug: **`/api-docs` would have returned `paths: {}` for every route in this
+project, not just QUERY, even before this fix and even before the v2 refactor** — the crash was
+simply turning that pre-existing (silent) emptiness into a 500 instead of a valid-but-useless 200.
+So the honest scope of this fix is: `/api-docs` and `/swagger-ui.html` no longer 500 and produce a
+valid OpenAPI document (verified: `GET /api-docs` → 200, `GET /swagger-ui.html` → 302 redirect that
+now resolves cleanly), but populating real per-route documentation for the functional routes would
+be a separate, larger task — adding `@RouterOperation` annotations for all ~13 routes — not attempted
+here since it wasn't what was asked.
+
+**Bonus fix found along the way**: `GlobalExceptionHandler.handleGeneric()` (the `@RestControllerAdvice`
+fallback for any future `@RestController`, and — as this investigation surfaced — the actual handler
+for exceptions from springdoc's own `@RestController` endpoints) was swallowing every unhandled
+exception with no logging at all, unlike its sibling `RouterExceptionFilter` which logs at `ERROR`.
+This is why the QUERY crash was invisible until `ex.printStackTrace()` was added temporarily to
+diagnose it. Now logs via `@Slf4j` the same way `RouterExceptionFilter` does.
+
 ## Everything else
 
 - `DataSeeder` now injects `SlotDurationConfig` and seeds grid-aligned slots (4 consecutive

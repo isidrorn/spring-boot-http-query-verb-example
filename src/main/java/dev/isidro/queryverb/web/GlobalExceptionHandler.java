@@ -2,6 +2,7 @@ package dev.isidro.queryverb.web;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -16,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
  * which intercepts them before they reach DispatcherServlet's exception resolvers.
  */
 @RestControllerAdvice
+@Slf4j
 public class GlobalExceptionHandler {
 
     @ExceptionHandler(ResponseStatusException.class)
@@ -36,6 +38,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleGeneric(Exception ex, HttpServletRequest req) {
+        log.error("Unhandled exception at {}", req.getRequestURI(), ex);
         ProblemDetail pd = ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred.");
         pd.setInstance(URI.create(req.getRequestURI()));
