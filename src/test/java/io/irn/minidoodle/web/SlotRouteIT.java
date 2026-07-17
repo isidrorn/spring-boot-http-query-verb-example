@@ -126,6 +126,42 @@ class SlotRouteIT {
         assertThat(res.getBody()).hasSize(1);
     }
 
+    /**
+     * A *present but malformed* body must 400, not be silently swallowed into "no filter" —
+     * only a genuinely empty/absent body gets that treatment. Regression test for a bug where
+     * SlotHandler.parseFilter caught every exception, including a real parse failure, and
+     * returned all slots unfiltered with no indication anything was wrong with the request.
+     */
+    @Test
+    void querySlots_withMalformedJson_returns400_notAllSlots() {
+        ResponseEntity<String> res = restTemplate.exchange(
+                "/api/users/{uid}/slots", QUERY,
+                new HttpEntity<>("{not valid json", jsonHeaders()),
+                String.class, userId);
+
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void querySlots_withUnparseableFromDate_returns400_notAllSlots() {
+        ResponseEntity<String> res = restTemplate.exchange(
+                "/api/users/{uid}/slots", QUERY,
+                new HttpEntity<>("{\"from\":\"not-a-date\"}", jsonHeaders()),
+                String.class, userId);
+
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void querySlots_withInvalidStatusEnum_returns400_notAllSlots() {
+        ResponseEntity<String> res = restTemplate.exchange(
+                "/api/users/{uid}/slots", QUERY,
+                new HttpEntity<>("{\"status\":\"NOT_A_STATUS\"}", jsonHeaders()),
+                String.class, userId);
+
+        assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     // ── GET (single) ──────────────────────────────────────────────────────────
 
     @Test

@@ -6,10 +6,14 @@ import io.irn.minidoodle.web.dto.SlotQueryFilter;
 import io.irn.minidoodle.web.dto.SlotUpdateRequest;
 import io.irn.minidoodle.web.mapper.SlotMapper;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.function.ServerRequest;
 import org.springframework.web.servlet.function.ServerResponse;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 @Component
 @RequiredArgsConstructor
@@ -18,6 +22,7 @@ public class SlotHandler {
     private final SlotService slotService;
     private final SlotMapper slotMapper;
     private final RequestValidator requestValidator;
+    private final ObjectMapper objectMapper;
 
     public ServerResponse getOne(ServerRequest request) throws Exception {
         return ok(slotMapper.toResponse(slotService.requireOwned(userId(request), slotId(request))));
@@ -75,15 +80,30 @@ public class SlotHandler {
     /**
      * Content-Length is unreliable here: the QUERY verb isn't recognized by every
      * HTTP client as carrying a body, so some clients omit the header even when a
-     * body is present. Just attempt to parse it; an empty/absent body still maps
-     * to "no filter" via the catch.
+     * body is present. Read the raw body first and only treat a genuinely blank one as
+     * "no filter" — a *present but malformed* body (bad JSON, an unparseable date, an
+     * invalid status) must still 400 rather than be silently swallowed into "no filter",
+     * which would otherwise return an unfiltered result set with no indication the
+     * client's filter was ignored.
      */
-    private SlotQueryFilter parseFilter(ServerRequest request) {
-        try {
-            return request.body(SlotQueryFilter.class);
-        } catch (Exception e) {
+    private SlotQueryFilter parseFilter(ServerRequest request) throws Exception {
+        String raw = request.body(String.class);
+        if (raw == null || raw.isBlank()) {
             return SlotQueryFilter.empty();
         }
+        try {
+            return objectMapper.readValue(raw, SlotQueryFilter.class);
+        } catch (JacksonException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Malformed request body: " + rootCauseMessage(e));
+        }
+    }
+
+    private static String rootCauseMessage(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage();
     }
 
     private ServerResponse ok(Object body) throws Exception {
