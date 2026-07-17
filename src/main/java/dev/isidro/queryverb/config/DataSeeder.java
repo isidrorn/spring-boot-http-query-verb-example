@@ -20,24 +20,32 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class DataSeeder implements ApplicationRunner {
 
+    private static final int SEED_SLOTS_PER_USER = 4;
+
     private final UserRepository userRepository;
+    private final SlotDurationConfig slotDurationConfig;
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
-        seedUser("Alice", "alice@example.dev");
-        seedUser("Bob", "bob@example.dev");
+        // Same grid start for both users, so their slots share a window a demo meeting can book.
+        Instant gridStart = Instant.now().truncatedTo(ChronoUnit.HOURS);
+        seedUser("Alice", "alice@example.dev", gridStart);
+        seedUser("Bob", "bob@example.dev", gridStart);
         log.info("Seed complete. Use the logged calendar IDs to call the API.");
     }
 
-    private void seedUser(String name, String email) {
+    private void seedUser(String name, String email, Instant gridStart) {
         User user = new User(name, email);
         Calendar calendar = new Calendar(user);
 
-        Instant now = Instant.now().truncatedTo(ChronoUnit.HOURS);
-        calendar.addSlot(new Slot(now, now.plus(1, ChronoUnit.HOURS)));
-        calendar.addSlot(new Slot(now.plus(2, ChronoUnit.HOURS), now.plus(3, ChronoUnit.HOURS)));
-        calendar.addSlot(new Slot(now.plus(1, ChronoUnit.DAYS),  now.plus(1, ChronoUnit.DAYS).plus(1, ChronoUnit.HOURS)));
+        long durationMinutes = slotDurationConfig.getSlotDurationMinutes();
+        for (int i = 0; i < SEED_SLOTS_PER_USER; i++) {
+            Instant start = gridStart.plus(i * durationMinutes, ChronoUnit.MINUTES);
+            calendar.addSlot(new Slot(start, start.plus(durationMinutes, ChronoUnit.MINUTES)));
+        }
+        Instant nextDayStart = gridStart.plus(1, ChronoUnit.DAYS);
+        calendar.addSlot(new Slot(nextDayStart, nextDayStart.plus(durationMinutes, ChronoUnit.MINUTES)));
 
         userRepository.save(user);
         log.info("Seeded user='{}' userId={} calendarId={}", name, user.getId(), calendar.getId());

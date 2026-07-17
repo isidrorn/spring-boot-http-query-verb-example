@@ -14,6 +14,9 @@ spring:
 server:
   port: 8080
 
+scheduling:
+  slot-duration-minutes: 30
+
 management:
   endpoints:
     web:
