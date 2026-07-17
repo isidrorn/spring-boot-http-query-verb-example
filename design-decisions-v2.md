@@ -293,47 +293,86 @@ enum values and every field's real type, so this can't silently drift out of syn
 way a hand-maintained duplicate could). Verified live: `GET /api-docs` now has a `paths./api/users/
 {userId}/slots.x-query` entry with real, non-dangling `$ref`s.
 
-**This is deliberately not claimed as "QUERY is now documented in Swagger UI."** It isn't, and
-almost certainly can't be via this mechanism: Swagger UI's renderer only builds interactive
-operation cards from the fixed method keys (get/put/post/delete/head/options/patch/trace) — an
-arbitrary `x-` key holding an Operation-shaped object isn't one of them, regardless of OpenAPI
-version, and nothing found during this investigation suggests Swagger UI treats extensions as
-renderable operations. (Not confirmed with an actual browser screenshot — browser automation wasn't
-available in this environment — but this follows directly from Swagger UI's long-established,
-long-documented rendering model, not a fresh guess.) The value of this customizer is narrower and
-real: the same information as `query-endpoint.openapi.yaml`, self-updating from the real DTOs,
-discoverable to anything already consuming `/api-docs` programmatically — not a route to a visible,
-interactive Swagger UI card. `query-endpoint.openapi.yaml` remains the actual human-readable
-reference.
+At that point the investigation had concluded — reasonably, but wrongly — that an `x-`-prefixed
+extension was the ceiling: Swagger UI's renderer builds operation cards from the fixed method keys,
+and an extension holding an Operation-shaped object isn't one of them. **That conclusion turned out
+to be incomplete**, corrected by checking one more concrete thing instead of stopping at "this is how
+Swagger UI has always worked": exactly which Swagger UI build this project actually ships.
 
-> #### 🔭 Open question — revisit later, partially narrowed, not resolved
+#### The actual fix: this project's own Swagger UI build already supports `query` — it just needs a real key, not an extension
+
+`mvn dependency:tree` shows this project resolves `org.webjars:swagger-ui:5.32.2` — not an old,
+long-established build. Extracting `swagger-ui-bundle.js` from that exact jar and grepping it
+(not reading about Swagger UI in general — reading the literal JS this browser runs) turns up:
+
+```
+["get","put","post","delete","options","head","patch","trace","query"]
+```
+
+— a method list with `query` already in it, used by the frontend's own operation-rendering logic —
+plus a set of functions named `isOAS32`/`createOnlyOAS32ComponentWrapper` that gate 3.2-specific
+UI behavior (including, per usage elsewhere in the bundle, which methods count as valid operations)
+behind a check on the document's own declared version:
+
+```js
+isOAS32 = s => { const o = s.get("openapi"); return typeof o === "string" && /^3\.2\.(?:[1-9]\d*|0)$/.test(o) }
+```
+
+So the ceiling was never "Swagger UI can't render this" — it's specifically: (1) the operation must
+sit under a literal `query` key, not `x-query`, and (2) the document must *declare* `"openapi":
+"3.2.0"` (or later) for the frontend to even check for it. Neither of those needs springdoc or
+swagger-core (the Java-side dependencies) to support OpenAPI 3.2 at all — they're purely properties
+of the JSON string that ends up in the browser, and nothing requires that JSON to have been produced
+by fields on `io.swagger.v3.oas.models.PathItem`.
+
+[`OpenApiQueryOperationFilter`](src/main/java/dev/isidro/queryverb/config/OpenApiQueryOperationFilter.java)
+is a servlet `Filter` (not a springdoc/swagger-core hook — deliberately below that layer) mapped to
+`/api-docs`, that runs *after* springdoc has fully produced its normal document: it parses the
+already-serialized JSON, renames the `x-query` extension (built by `OpenApiQuerySupportConfig`,
+above) to a real `query` sibling of `get`/`post`, and bumps the document's `openapi` field to
+`3.2.0`. Verified against the live response, not just "should work": `GET /api-docs` now returns
+`"openapi":"3.2.0"` and `paths./api/users/{userId}/slots` has a genuine `query` key — exactly the
+two conditions `isOAS32()`/the method list above require. **Not confirmed with an actual browser
+screenshot** — browser automation wasn't available in the environment this was built in — so treat
+"Swagger UI renders this as a clickable operation card" as *very likely, backed by reading this
+exact browser build's own rendering logic* rather than as visually confirmed. Check
+`http://localhost:8080/swagger-ui.html` directly if you want to see it.
+
+Building the JSON this way sidesteps a real, independently-confirmed wall: `io.swagger.v3.oas.models
+.PathItem` in `swagger-models-jakarta-2.2.47.jar` (this project's pinned swagger-core version) has no
+`query` field and no `additionalOperations` map at all — there is no way to make the *Java* object
+carry a real `query` operation, only the JSON string downstream of it. Confirmed by inspecting
+`PathItem.class` directly, not inferred.
+
+**A quick real check on an alternative worth naming, not implemented**: springdoc does have a genuine
+property for showing more than one spec in Swagger UI — `springdoc.swagger-ui.urls` (a `Set` of
+`{url, name, displayName}` entries, confirmed present in `AbstractSwaggerUiConfigProperties`). It
+renders as a dropdown letting a user pick between separate documents (e.g. the generated one and a
+hand-written one) — it doesn't merge them into a single document the way the filter above does, and
+was not needed once the filter approach worked, but it's a real, available, much simpler option if a
+future maintainer wants to expose `query-endpoint.openapi.yaml` directly instead.
+
+**Is this a consequence of this project's routing design (`RouterFunction` vs. classic
+`@RequestMapping`)?** Narrowed further, still not fully closed. The Java-side wall
+(`RequestMethod`/`PathItem` having no `QUERY`/`query` representation) applies to both routing styles
+equally — confirmed earlier that `@RequestMapping`'s automatic discovery goes through the same
+`RequestMethod`-typed machinery. The JSON-level fix above is *also* routing-implementation-agnostic:
+it operates on the already-serialized document regardless of how the underlying route was declared.
+So: no, choosing `RouterFunction`/WebMvc.fn over `@RequestMapping` does not appear to be why this
+needed a workaround — the workaround would have been necessary either way, given this project's
+pinned springdoc/swagger-core versions.
+
+> #### 🔭 Remaining open items — noted, not chased further
 >
-> **Would a different implementation approach for the QUERY route (or for how this project talks to
-> springdoc) avoid this gap entirely, rather than just documenting around it?** Flagged explicitly so
-> it doesn't get lost — deliberately *not* investigated deeply, per instruction, beyond what's below.
-> One angle is now checked off; the rest are still open:
-> - ~~Is there a supported way to make an `OpenApiCustomizer`-injected operation render as a normal
->   operation card in Swagger UI?~~ **Checked, and no** — see above. `x-`-prefixed extensions survive
->   serialization but Swagger UI doesn't render them as operations; an unprefixed key matching a real
->   method name (as one proposal suggested) is simply dropped by swagger-core before it ever reaches
->   the client. The remaining variant not tested: constructing the `Operation` under a real (if
->   semantically wrong) method key like `post` with a loud disclaimer, trading "actively mislabels
->   the one thing this project exists to get right" for "actually clickable in Swagger UI." Not
->   attempted — the trade-off didn't seem worth it without being asked for specifically.
-> - Has springdoc-openapi (or swagger-core) shipped OpenAPI 3.2 / `additionalOperations` support yet?
->   Check current versions before reaching for anything more elaborate — this may simply resolve
->   itself with a dependency bump. (As of this writing: no — swagger-models-jakarta 2.2.47's
->   `PathItem.class` has neither a `query` field nor `additionalOperations`, confirmed by inspecting
->   the class directly.)
-> - Would routing QUERY through a fully custom `HandlerMapping`/`HandlerAdapter` pair (bypassing both
->   `@RequestMapping` and WebMvc.fn's `RouterFunction`) give springdoc *anything* more to work with,
->   or does its introspection ultimately bottom out at `RequestMethod` regardless of the dispatch
->   mechanism above it? Still unconfirmed.
-> - Reassess whether documenting-around-it remains the right call once any of the above changes, or
->   whether it's worth revisiting the "servlet filter rewriting QUERY → POST" alternative the README
->   already discusses and rejected for routing — springdoc would document that cleanly, at the cost
->   of the same problem the README already flags: hiding the real method from logs, metrics, and
->   tracing, undermining what this project demonstrates.
+> - Whether springdoc-openapi/swagger-core ship native OpenAPI 3.2 support in a future release,
+>   making the filter above unnecessary. As of this writing (swagger-models-jakarta 2.2.47): no.
+>   Worth checking again before assuming the filter is still needed.
+> - Whether routing QUERY through a fully custom `HandlerMapping`/`HandlerAdapter` pair would let
+>   springdoc's Java-side model represent it any differently. Given the filter above already achieves
+>   a real, correctly-gated `query` key without touching routing at all, this is now lower-value to
+>   chase — noted for completeness, not because it seems likely to matter anymore.
+> - An actual browser screenshot confirming the operation card renders and is clickable/"Try it out"
+>   -able, not just that the JSON satisfies the frontend's own stated conditions.
 
 **Bonus fix found along the way**: `GlobalExceptionHandler.handleGeneric()` (the `@RestControllerAdvice`
 fallback for any future `@RestController`, and — as this investigation surfaced — the actual handler

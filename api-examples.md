@@ -63,9 +63,10 @@ USER=1   # replace with the actual userId from the seeder log
 curl -s "$BASE/api/users/$USER/slots" | jq
 
 # ── HTTP QUERY verb — filter by body ──────────────────────────────────────────
-# Not in Swagger UI: springdoc-openapi can't document a non-standard HTTP method (yet — this is an
-# OpenAPI-spec/tooling-version gap, not a bug in this app). See query-endpoint.openapi.yaml for a
-# hand-written OpenAPI-style doc of this one route, and design-decisions-v2.md for the full story.
+# Documented in Swagger UI too — springdoc-openapi itself can't represent a non-standard HTTP
+# method, so /api-docs is post-processed to expose this as a real OpenAPI 3.2 `query` operation.
+# See query-endpoint.openapi.yaml for a fuller hand-written reference, and design-decisions-v2.md
+# for how this actually works (and what was tried first and didn't).
 # Filter by status
 curl -s -X QUERY "$BASE/api/users/$USER/slots" \
   -H "Content-Type: application/json" \

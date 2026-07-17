@@ -254,9 +254,11 @@ as already fixed, and don't merge their content, they document two separate pass
   creation). Read it before touching `MeetingService.vote()`/`confirm()` — it documents an actual
   contradiction in the brief this design came from (whether a participant without free slots should
   block confirmation with a 409, or be silently skipped) and which behavior was implemented and why.
-  It also has an **open question flagged for later, not yet resolved** (🔭 near the end, in the
-  "Why QUERY itself has no live `/api-docs` entry" section): whether a different implementation
-  approach for the QUERY route could avoid the springdoc-openapi documentation gap entirely, rather
-  than documenting around it by hand (see [`query-endpoint.openapi.yaml`](query-endpoint.openapi.yaml)).
-  Check that section before spending more time on `/api-docs`/Swagger for the QUERY route — it has
-  the investigation done so far and the specific angles still worth checking.
+  It also covers the `/api-docs`/Swagger UI story for the `QUERY` route (the "Why QUERY itself has
+  no live `/api-docs` entry" section) — springdoc/swagger-core's Java model has no way to represent
+  a `query` operation, but `OpenApiQueryOperationFilter` post-processes the served JSON directly to
+  expose it as a real OpenAPI 3.2 operation anyway, since this project's actual bundled Swagger UI
+  (5.32.2) already ships frontend support for it. Read that section (and
+  [`troubleshooting.md`](troubleshooting.md)) before touching `OpenApiQuerySupportConfig` /
+  `OpenApiQueryOperationFilter` — it explains exactly what was tried and ruled out first, including
+  a specific externally-proposed approach that turned out not to work.
