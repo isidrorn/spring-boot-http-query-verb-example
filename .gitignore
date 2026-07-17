@@ -8,7 +8,8 @@ target/
 .claude/settings.local.json
 
 # Local-only working notes — not meant for the public repo (superseded by CLAUDE.md /
-# spec-review.md, or otherwise private): the original take-home prompt and the informal
-# planning brief used while building this out
+# spec-review.md / design-decisions-v2.md, or otherwise private): the original take-home prompt and
+# the informal planning briefs used while building this out
 coding-challenge.md
 claude-code-brief.md
+claude-code-brief-v2.md

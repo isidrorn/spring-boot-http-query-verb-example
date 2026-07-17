@@ -2,8 +2,8 @@
 #
 # End-to-end walkthrough of the mini-Doodle API against a live instance: creates its
 # own users and slots (never assumes DataSeeder's ids), then exercises QUERY filtering,
-# validation, the overlap conflict, and the full meeting schedule/cancel lifecycle.
-# Safe to run repeatedly — each run creates fresh demo users.
+# validation, bulk slot creation, and the full meeting propose → vote → confirm/cancel
+# lifecycle. Safe to run repeatedly — each run creates fresh demo users.
 #
 # Usage:
 #   mvn spring-boot:run -Dspring-boot.run.profiles=local   # or: docker-compose up
@@ -66,8 +66,8 @@ iso_from_epoch() {
 }
 
 NOW=$(date -u +%s)
-HOUR=3600
 DAY=86400
+SLOT=1800   # matches the default scheduling.slot-duration-minutes (30)
 
 # ── 0. health check ───────────────────────────────────────────────────────────
 
@@ -81,81 +81,102 @@ call GET /actuator/health
 
 # ── 1. users ──────────────────────────────────────────────────────────────────
 
-section "Create two users"
+section "Create three users"
 call POST /api/users "{\"name\":\"Demo Alice\",\"email\":\"demo.alice.$NOW@example.com\"}"
 ALICE_ID=$(jq -r .id <<<"$HTTP_BODY")
 
 call POST /api/users "{\"name\":\"Demo Bob\",\"email\":\"demo.bob.$NOW@example.com\"}"
 BOB_ID=$(jq -r .id <<<"$HTTP_BODY")
 
+call POST /api/users "{\"name\":\"Demo Carol\",\"email\":\"demo.carol.$NOW@example.com\"}"
+CAROL_ID=$(jq -r .id <<<"$HTTP_BODY")
+
 echo
-echo "Created userId=$ALICE_ID (Alice), userId=$BOB_ID (Bob)"
+echo "Created userId=$ALICE_ID (Alice), userId=$BOB_ID (Bob), userId=$CAROL_ID (Carol)"
 
 section "Validation: blank name + malformed email → 400"
 call POST /api/users '{"name":"","email":"not-an-email"}'
 
 # ── 2. slots ──────────────────────────────────────────────────────────────────
 
-ALICE_S1_START=$(iso_from_epoch $((NOW + DAY)))
-ALICE_S1_END=$(iso_from_epoch $((NOW + DAY + HOUR)))
-ALICE_S2_START=$(iso_from_epoch $((NOW + DAY + 3 * HOUR)))
-ALICE_S2_END=$(iso_from_epoch $((NOW + DAY + 4 * HOUR)))
-# Same window as Alice's first slot, so it's a valid meeting participant slot later on.
-BOB_S1_START="$ALICE_S1_START"
-BOB_S1_END="$ALICE_S1_END"
+# Round up to the next slot-grid boundary, one day out, so this never collides with a
+# past-dated or misaligned slot from an earlier run.
+GRID_START=$(( (NOW / SLOT + 1) * SLOT + DAY ))
+S1_START=$(iso_from_epoch "$GRID_START")
+S2_START=$(iso_from_epoch $((GRID_START + SLOT)))
+MEETING_START="$S1_START"
+MEETING_END=$(iso_from_epoch $((GRID_START + 2 * SLOT)))
 
-section "Create slots"
-call POST "/api/users/$ALICE_ID/slots" "{\"startTime\":\"$ALICE_S1_START\",\"endTime\":\"$ALICE_S1_END\"}"
-ALICE_SLOT1=$(jq -r .id <<<"$HTTP_BODY")
+section "Bulk-create two consecutive slots for Alice and for Bob (same window)"
+call POST "/api/users/$ALICE_ID/slots" "{\"startTimes\":[\"$S1_START\",\"$S2_START\"]}"
 
-call POST "/api/users/$ALICE_ID/slots" "{\"startTime\":\"$ALICE_S2_START\",\"endTime\":\"$ALICE_S2_END\"}"
-ALICE_SLOT2=$(jq -r .id <<<"$HTTP_BODY")
+call POST "/api/users/$BOB_ID/slots" "{\"startTimes\":[\"$S1_START\",\"$S2_START\"]}"
 
-call POST "/api/users/$BOB_ID/slots" "{\"startTime\":\"$BOB_S1_START\",\"endTime\":\"$BOB_S1_END\"}"
-BOB_SLOT1=$(jq -r .id <<<"$HTTP_BODY")
+echo
+echo "(Carol gets no slots at all — used below to show a missing-coverage participant"
+echo " doesn't block meeting confirmation, see design-decisions-v2.md)"
 
-section "List all of Alice's slots"
+section "List Alice's slots"
 call GET "/api/users/$ALICE_ID/slots"
 
 section "QUERY: filter by status=FREE"
 call QUERY "/api/users/$ALICE_ID/slots" '{"status":"FREE"}'
 
-section "QUERY: filter by time range (only Alice's first slot falls inside it)"
-call QUERY "/api/users/$ALICE_ID/slots" "{\"from\":\"$ALICE_S1_START\",\"to\":\"$ALICE_S1_END\"}"
+section "QUERY: filter by time range"
+call QUERY "/api/users/$ALICE_ID/slots" "{\"from\":\"$S1_START\",\"to\":\"$S2_START\"}"
 
 section "QUERY: no body at all → treated as 'no filter', same as GET"
 echo "(this is the core QUERY gotcha this project exists to demonstrate — see SlotHandler.parseFilter)"
 call QUERY "/api/users/$ALICE_ID/slots"
 
-section "Create an overlapping slot → 409"
-call POST "/api/users/$ALICE_ID/slots" "{\"startTime\":\"$ALICE_S1_START\",\"endTime\":\"$ALICE_S1_END\"}"
+section "Validation: startTime not aligned to the slot grid → 400"
+call POST "/api/users/$ALICE_ID/slots" "{\"startTimes\":[\"$(iso_from_epoch $((GRID_START + 60)))\"]}"
+
+section "Bulk-create a slot that already exists → 409, whole batch fails"
+call POST "/api/users/$ALICE_ID/slots" "{\"startTimes\":[\"$S1_START\"]}"
 
 # ── 3. meetings ───────────────────────────────────────────────────────────────
 
-section "Schedule a meeting (Alice's slot + Bob's slot, same window)"
-call POST "/api/users/$ALICE_ID/slots/$ALICE_SLOT1/meeting" \
-  "{\"title\":\"Team sync\",\"description\":\"Weekly\",\"participantSlotIds\":[$BOB_SLOT1]}"
+section "Validation: propose a meeting with a blank title → 400"
+call POST /api/meetings "{\"title\":\"\",\"organizerUserId\":$ALICE_ID,\"startTime\":\"$MEETING_START\",\"endTime\":\"$MEETING_END\"}"
+
+section "Propose a meeting: Alice organizes, Bob is required, Carol is optional"
+call POST /api/meetings "{\"title\":\"Team sync\",\"description\":\"Weekly\",\"organizerUserId\":$ALICE_ID,\"startTime\":\"$MEETING_START\",\"endTime\":\"$MEETING_END\",\"requiredParticipantUserIds\":[$BOB_ID],\"optionalParticipantUserIds\":[$CAROL_ID]}"
 MEETING_ID=$(jq -r .id <<<"$HTTP_BODY")
 
-section "Get the meeting — each slot carries its owning userId"
-call GET "/api/meetings/$MEETING_ID"
+echo
+echo "Meeting $MEETING_ID is PROPOSED; Alice (organizer) is auto-YES, Bob and Carol are PENDING."
 
-section "Validation: scheduling with no participants → 400"
-call POST "/api/users/$ALICE_ID/slots/$ALICE_SLOT2/meeting" \
-  '{"title":"Solo","description":"","participantSlotIds":[]}'
+section "Bob (REQUIRED) votes YES — the last required vote, so the meeting confirms"
+call POST "/api/meetings/$MEETING_ID/participants/$BOB_ID/vote" '{"vote":"YES"}'
 
-section "Double-book: reuse a slot that's already busy → 409"
-call POST "/api/users/$BOB_ID/slots/$BOB_SLOT1/meeting" \
-  "{\"title\":\"Conflict\",\"description\":\"\",\"participantSlotIds\":[$ALICE_SLOT2]}"
+section "Alice's slots are now BUSY and linked to the meeting"
+call GET "/api/users/$ALICE_ID/slots"
 
-section "Cancel the meeting — both slots go back to FREE"
-call DELETE "/api/users/$ALICE_ID/slots/$ALICE_SLOT1/meeting"
-call GET "/api/users/$ALICE_ID/slots/$ALICE_SLOT1"
+section "Voting again on a meeting that's no longer PROPOSED → 409"
+call POST "/api/meetings/$MEETING_ID/participants/$CAROL_ID/vote" '{"vote":"YES"}'
 
-# ── 4. cleanup + observability ────────────────────────────────────────────────
+section "Non-organizer tries to cancel the meeting → 403"
+call DELETE "/api/meetings/$MEETING_ID" "{\"userId\":$BOB_ID}"
+
+section "Organizer cancels the CONFIRMED meeting — booked slots go back to FREE"
+call DELETE "/api/meetings/$MEETING_ID" "{\"userId\":$ALICE_ID}"
+call GET "/api/users/$ALICE_ID/slots"
+
+# ── 4. a required NO cancels immediately ────────────────────────────────────────
+
+section "Propose a second meeting, then have the required participant vote NO"
+call POST /api/meetings "{\"title\":\"Will be declined\",\"organizerUserId\":$ALICE_ID,\"startTime\":\"$MEETING_START\",\"endTime\":\"$MEETING_END\",\"requiredParticipantUserIds\":[$BOB_ID]}"
+DECLINED_MEETING_ID=$(jq -r .id <<<"$HTTP_BODY")
+
+call POST "/api/meetings/$DECLINED_MEETING_ID/participants/$BOB_ID/vote" '{"vote":"NO"}'
+echo
+echo "Meeting $DECLINED_MEETING_ID is CANCELLED immediately — no confirmation step needed."
+
+# ── 5. cleanup + observability ────────────────────────────────────────────────
 
 section "Delete a slot"
-call DELETE "/api/users/$ALICE_ID/slots/$ALICE_SLOT2"
+call DELETE "/api/users/$BOB_ID/slots/$(curl -s "$BASE_URL/api/users/$BOB_ID/slots" | jq -r '.[0].id')"
 
 section "Observability"
 call GET /actuator/health
@@ -163,5 +184,5 @@ echo "Prometheus metrics: curl -s $BASE_URL/actuator/prometheus | grep http_serv
 echo "Swagger UI:         $BASE_URL/swagger-ui.html"
 
 echo
-echo "Demo complete. Users created: userId=$ALICE_ID, userId=$BOB_ID (this script doesn't delete"
-echo "them — there's no DELETE /api/users endpoint — so repeated runs accumulate demo users)."
+echo "Demo complete. Users created: userId=$ALICE_ID, $BOB_ID, $CAROL_ID (this script doesn't"
+echo "delete them — there's no DELETE /api/users endpoint — so repeated runs accumulate demo users)."
