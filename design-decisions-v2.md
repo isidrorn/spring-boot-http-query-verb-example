@@ -192,20 +192,36 @@ one bad route in any bean kills `/api-docs` for the entire application, not just
    `QUERY`-specific `SlotRouteIT` cases and the bulk-create concurrency test) after the split, not
    just assumed from how the mapping is documented to work.
 
-**What this fix actually achieves, found while verifying it**: springdoc's automatic documentation
-of `RouterFunction` routes isn't fully automatic. Tracing `AbstractOpenApiResource
-.getRouterFunctionPaths()` shows it only populates real `Operation` entries for a route already
-carrying a `.withAttribute(OPERATION_ATTRIBUTE, ...)` marker, or one matched against manual
-`@RouterOperation`/`@RouterOperations` annotations on the bean — neither of which this project has.
-Without them, `mergeRouters()` runs against an empty operation list and produces nothing. This is
-independent of the QUERY bug: **`/api-docs` would have returned `paths: {}` for every route in this
-project, not just QUERY, even before this fix and even before the v2 refactor** — the crash was
-simply turning that pre-existing (silent) emptiness into a 500 instead of a valid-but-useless 200.
-So the honest scope of this fix is: `/api-docs` and `/swagger-ui.html` no longer 500 and produce a
-valid OpenAPI document (verified: `GET /api-docs` → 200, `GET /swagger-ui.html` → 302 redirect that
-now resolves cleanly), but populating real per-route documentation for the functional routes would
-be a separate, larger task — adding `@RouterOperation` annotations for all ~13 routes — not attempted
-here since it wasn't what was asked.
+**A first pass at this fix only got `/api-docs` from 500 to `paths: {}` — a valid but useless empty
+document.** Tracing `AbstractOpenApiResource.getRouterFunctionPaths()` explained why: springdoc's
+automatic documentation of `RouterFunction` routes isn't actually automatic. It only populates real
+`Operation` entries for a route already carrying a `.withAttribute(OPERATION_ATTRIBUTE, ...)` marker,
+or one matched against manual `@RouterOperation`/`@RouterOperations` annotations on the bean.
+Without either, `mergeRouters()` runs against an empty operation list and silently produces nothing
+— independent of the QUERY bug entirely: **`/api-docs` would have returned `paths: {}` for every
+route in this project, not just QUERY, even before this fix and even before the v2 refactor.** The
+crash was just turning that pre-existing (silent) emptiness into a 500 instead of a
+valid-but-useless 200 — not something to stop at.
+
+**Fixed properly**: `SlotRouterConfig.routes()` now carries a `@RouterOperations` block with one
+`@RouterOperation(path=..., method=..., beanClass=..., beanMethod=...)` entry per non-QUERY route
+(12 entries — every user/slot/meeting route except the QUERY one). Verified against the actual
+generated document, not just "compiles": `GET /api-docs` now returns 7 real path templates covering
+all 12 operations, correctly grouped into `user-handler`/`slot-handler`/`meeting-handler` tags in
+Swagger UI. `RouterOperation.method()` is still typed `RequestMethod[]` — the same closed enum with
+no `QUERY` constant — so there is no annotation-based way to document that one route either; it's
+excluded from the `@RouterOperations` block and stays absent from the spec, which is a real,
+structural dead end rather than something left undone.
+
+**Known remaining gap, not chased further**: `beanMethod` reflection gives springdoc each handler's
+actual Java signature to infer schemas from — but every handler method here is `ServerResponse
+handler(ServerRequest request)` (the WebMvc.fn wrapper types), not a method with `SlotResponse`/
+`SlotBulkCreateRequest`/etc. in its signature. So each documented operation shows a generic
+`ServerResponse` response schema instead of the real DTO shape, and no request body schema at all.
+Paths, verbs, and handler grouping are all correct and Swagger UI is genuinely navigable now; full
+per-DTO schema detail would mean adding explicit `@Operation(requestBody=..., responses=...)`
+content to each of the 12 `@RouterOperation` entries — real, bounded, but meaningfully more work,
+not attempted here.
 
 **Bonus fix found along the way**: `GlobalExceptionHandler.handleGeneric()` (the `@RestControllerAdvice`
 fallback for any future `@RestController`, and — as this investigation surfaced — the actual handler
