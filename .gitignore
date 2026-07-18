@@ -18,3 +18,8 @@ gemini-proposal-spring-doc.txt
 
 # Personal interview training notes — self-critique written for one person's prep, not the repo
 interview-prep-questions.md
+
+# Session handoff/planning notes and raw conversation exports — private working state for
+# continuing across sessions, not portfolio content
+NEXT-SESSION-HANDOFF.md
+claude-code-session-*.txt
